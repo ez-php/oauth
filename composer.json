@@ -1,6 +1,6 @@
 {
   "name": "ez-php/oauth",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "OAuth2/SSO client flows: authorization code flow with PKCE and state, token exchange via ez-php/http-client",
   "type": "library",
   "license": "MIT",
@@ -18,7 +18,6 @@
   },
   "require": {
     "php": "^8.5",
-    "ez-php/contracts": "^2.0",
     "ez-php/http-client": "^2.0"
   },
   "require-dev": {
