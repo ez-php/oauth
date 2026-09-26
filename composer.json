@@ -1,6 +1,6 @@
 {
   "name": "ez-php/oauth",
-  "version": "2.5.2",
+  "version": "2.5.3",
   "description": "OAuth2/SSO client flows: authorization code flow with PKCE and state, token exchange via ez-php/http-client",
   "type": "library",
   "license": "MIT",
