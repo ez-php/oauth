@@ -12,11 +12,18 @@ namespace EzPhp\OAuth;
  * store is used (e.g. via a session-start middleware run ahead of the
  * OAuth-handling route).
  *
+ * Entries are removed when `pull()` redeems them; `put()` additionally drops
+ * expired entries and keeps at most MAX_PENDING (oldest dropped first), so
+ * logins that are started but never completed cannot grow the session forever.
+ *
  * @package EzPhp\OAuth
  */
 final class SessionOAuthStateStore implements OAuthStateStoreInterface
 {
     private const string STORAGE_KEY = '_oauth_state';
+
+    /** Upper bound of pending states per session (e.g. parallel login tabs). */
+    public const int MAX_PENDING = 20;
 
     /**
      * @param string               $state
@@ -30,13 +37,21 @@ final class SessionOAuthStateStore implements OAuthStateStoreInterface
     {
         $this->assertSessionActive();
 
-        $bucket = $this->bucket();
+        $now = time();
+        $bucket = array_filter(
+            $this->bucket(),
+            static fn (mixed $entry): bool => is_array($entry)
+                && isset($entry['expiresAt'])
+                && is_int($entry['expiresAt'])
+                && $entry['expiresAt'] > $now,
+        );
+        unset($bucket[$state]);
         $bucket[$state] = [
             'payload' => $payload,
-            'expiresAt' => time() + $ttlSeconds,
+            'expiresAt' => $now + $ttlSeconds,
         ];
 
-        $_SESSION[self::STORAGE_KEY] = $bucket;
+        $_SESSION[self::STORAGE_KEY] = array_slice($bucket, -self::MAX_PENDING, preserve_keys: true);
     }
 
     /**

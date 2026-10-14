@@ -64,6 +64,29 @@ final class SessionOAuthStateStoreTest extends TestCase
         self::assertNull($this->store->pull('state-1'));
     }
 
+    public function testPutDropsExpiredEntries(): void
+    {
+        $this->store->put('abandoned', ['verifier' => 'old'], -1);
+        $this->store->put('state-2', ['verifier' => 'new'], 600);
+
+        $bucket = $_SESSION['_oauth_state'];
+        self::assertIsArray($bucket);
+        self::assertSame(['state-2'], array_keys($bucket));
+    }
+
+    public function testPutKeepsAtMostMaxPendingEntriesDroppingTheOldest(): void
+    {
+        for ($i = 0; $i <= SessionOAuthStateStore::MAX_PENDING; $i++) {
+            $this->store->put('state-' . $i, ['verifier' => 'v' . $i], 600);
+        }
+
+        $bucket = $_SESSION['_oauth_state'];
+        self::assertIsArray($bucket);
+        self::assertCount(SessionOAuthStateStore::MAX_PENDING, $bucket);
+        self::assertNull($this->store->pull('state-0'));
+        self::assertSame(['verifier' => 'v' . SessionOAuthStateStore::MAX_PENDING], $this->store->pull('state-' . SessionOAuthStateStore::MAX_PENDING));
+    }
+
     public function testPutThrowsWithoutActiveSession(): void
     {
         session_write_close();

@@ -280,7 +280,7 @@ tests/
   TestCase.php                 — base test case
   PkceTest.php                  — verifier format, RFC 7636 test vector, determinism
   OAuthTokenTest.php            — fromArray() parsing/defaults/validation, isExpired()
-  SessionOAuthStateStoreTest.php — put/pull, one-time use, expiry, inactive-session guard
+  SessionOAuthStateStoreTest.php — put/pull, one-time use, expiry, pruning + MAX_PENDING cap, inactive-session guard
   OAuthClientTest.php           — authorization URL shape, PKCE/state round-trip via FakeTransport, refresh, error paths
 ```
 
@@ -302,7 +302,7 @@ tests/
 
 **`Pkce`** — static-only helper: `generateVerifier()` (64 random bytes, base64url) and `challengeFor($verifier)` (S256/base64url). No `plain` transform — S256 is the only method offered.
 
-**`OAuthStateStoreInterface`** / **`SessionOAuthStateStore`** — `put()`/`pull()` persist the state → verifier mapping between the two requests of the flow. `pull()` is one-time use (state cannot be redeemed twice) and expiry-checked. Mirrors `framework`'s `CsrfTokenStoreInterface`/`SessionCsrfTokenStore` pattern; the session must already be started by the application.
+**`OAuthStateStoreInterface`** / **`SessionOAuthStateStore`** — `put()`/`pull()` persist the state → verifier mapping between the two requests of the flow. `pull()` is one-time use (state cannot be redeemed twice) and expiry-checked. `put()` prunes expired entries and keeps at most `MAX_PENDING` (20, oldest dropped first), so abandoned logins don't accumulate in `$_SESSION` — pruning happens on write only, since a session that never starts another login never grows either. Mirrors `framework`'s `CsrfTokenStoreInterface`/`SessionCsrfTokenStore` pattern; the session must already be started by the application.
 
 ---
 
