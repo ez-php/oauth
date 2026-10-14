@@ -126,11 +126,14 @@ final class OAuthClient
         $response = $this->http->post($this->provider->tokenUrl)->withForm($form)->send();
 
         if (!$response->ok()) {
-            throw new OAuthException(sprintf(
-                'Token endpoint returned status %d: %s',
-                $response->status(),
-                $response->body(),
-            ));
+            $body = $response->json();
+            $error = is_array($body) && isset($body['error']) && is_string($body['error']) ? $body['error'] : null;
+
+            throw new OAuthException(
+                sprintf('Token endpoint returned status %d: %s', $response->status(), $response->body()),
+                status: $response->status(),
+                error: $error,
+            );
         }
 
         $data = $response->json();

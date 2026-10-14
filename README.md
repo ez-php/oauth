@@ -56,6 +56,25 @@ Refresh later:
 $token = $client->refresh($storedRefreshToken);
 ```
 
+### Error handling
+
+Every failure throws `OAuthException`. When the token endpoint answered with
+a non-2xx status, `$e->status` holds that status and `$e->error` the RFC 6749
+`error` code from the body (`null` if there was none); both are `null` for an
+invalid state or a malformed success response:
+
+```php
+try {
+    $token = $client->refresh($storedRefreshToken);
+} catch (OAuthException $e) {
+    if ($e->error === 'invalid_grant') {
+        // refresh token revoked or expired — forget it, ask the user to log in again
+    }
+
+    throw $e; // 5xx / 429: provider trouble, keep the refresh token
+}
+```
+
 ### State storage
 
 `SessionOAuthStateStore` persists the pending `state` value and PKCE verifier

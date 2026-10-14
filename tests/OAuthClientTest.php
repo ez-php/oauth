@@ -165,6 +165,51 @@ final class OAuthClientTest extends TestCase
         $client->exchangeCode('auth-code', $query['state']);
     }
 
+    public function testRejectedRefreshExposesStatusAndErrorCode(): void
+    {
+        $client = $this->makeClient(new FakeTransport([
+            '*' => HttpResponse::fake(['error' => 'invalid_grant'], 400),
+        ]));
+
+        try {
+            $client->refresh('revoked-refresh-token');
+            self::fail('Expected OAuthException.');
+        } catch (OAuthException $e) {
+            self::assertSame(400, $e->status);
+            self::assertSame('invalid_grant', $e->error);
+        }
+    }
+
+    public function testProviderOutageExposesStatusWithoutErrorCode(): void
+    {
+        $client = $this->makeClient(new FakeTransport([
+            '*' => HttpResponse::fake('<html>Service Unavailable</html>', 503),
+        ]));
+
+        try {
+            $client->refresh('refresh-123');
+            self::fail('Expected OAuthException.');
+        } catch (OAuthException $e) {
+            self::assertSame(503, $e->status);
+            self::assertNull($e->error);
+        }
+    }
+
+    public function testMalformedSuccessResponseHasNoStatusOrErrorCode(): void
+    {
+        $client = $this->makeClient(new FakeTransport([
+            '*' => HttpResponse::fake('not json', 200),
+        ]));
+
+        try {
+            $client->refresh('refresh-123');
+            self::fail('Expected OAuthException.');
+        } catch (OAuthException $e) {
+            self::assertNull($e->status);
+            self::assertNull($e->error);
+        }
+    }
+
     public function testRefreshSendsRefreshTokenGrant(): void
     {
         $transport = new FakeTransport([

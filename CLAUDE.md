@@ -274,7 +274,7 @@ src/
   OAuthStateStoreInterface.php — backing store for the pending state/PKCE-verifier pair between redirect and callback
   SessionOAuthStateStore.php  — $_SESSION-backed OAuthStateStoreInterface implementation
   Pkce.php                     — RFC 7636 code verifier/challenge generation (S256 only)
-  OAuthException.php           — thrown on invalid/expired state or a token endpoint error
+  OAuthException.php           — thrown on invalid/expired state or a token endpoint error; carries `status` / RFC 6749 `error` for the latter
   OAuthClient.php               — the flow: createAuthorizationUrl(), exchangeCode(), refresh()
 tests/
   TestCase.php                 — base test case
@@ -299,6 +299,8 @@ tests/
 **`OAuthProvider`** — pure config value object: `authorizeUrl`, `tokenUrl`, `clientId`, `clientSecret`, `redirectUri`, `scopes`, `authorizeParams`. No built-in catalog of specific providers — the application supplies its own.
 
 **`OAuthToken`** — value object for the token endpoint response. `OAuthToken::fromArray()` parses the decoded JSON, defaulting `token_type` to `bearer` and throwing `OAuthException` if `access_token` is missing/empty. `isExpired()` compares `issuedAt + expiresIn` against the current time, always `false` when the provider omitted `expires_in`.
+
+**`OAuthException`** — the module's only exception. A non-2xx token endpoint answer sets the readonly `?int $status` and `?string $error` (RFC 6749 §5.2 `error` field, when the body is JSON with a string `error`); every other failure leaves both `null`. One class with optional fields rather than a subclass hierarchy: the one decision callers need — "grant rejected, drop the refresh token" vs. "provider trouble, retry" — is a check on `$error`/`$status`, not a different catch block.
 
 **`Pkce`** — static-only helper: `generateVerifier()` (64 random bytes, base64url) and `challengeFor($verifier)` (S256/base64url). No `plain` transform — S256 is the only method offered.
 
