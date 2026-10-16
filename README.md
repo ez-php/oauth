@@ -42,6 +42,12 @@ header('Location: ' . $client->createAuthorizationUrl());
 exit;
 ```
 
+Extra authorization parameters (e.g. `prompt`, `login_hint`, or a narrower `scope`) go in
+`createAuthorizationUrl(['prompt' => 'consent'])` or the provider's `authorizeParams`. The
+parameters that carry the security of the flow — `response_type`, `client_id`, `redirect_uri`,
+`state`, `code_challenge`, `code_challenge_method` (`OAuthClient::RESERVED_PARAMS`) — cannot be
+overridden; trying to throws `OAuthException`.
+
 Handle the callback:
 
 ```php

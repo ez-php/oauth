@@ -12,6 +12,7 @@ use EzPhp\OAuth\OAuthException;
 use EzPhp\OAuth\OAuthProvider;
 use EzPhp\OAuth\SessionOAuthStateStore;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\UsesClass;
 
 /**
@@ -22,6 +23,7 @@ use PHPUnit\Framework\Attributes\UsesClass;
 #[CoversClass(OAuthClient::class)]
 #[UsesClass(OAuthProvider::class)]
 #[UsesClass(SessionOAuthStateStore::class)]
+#[UsesClass(OAuthException::class)]
 final class OAuthClientTest extends TestCase
 {
     private OAuthProvider $provider;
@@ -91,6 +93,63 @@ final class OAuthClientTest extends TestCase
         $query = $this->queryOf($url);
 
         self::assertSame('consent', $query['prompt']);
+    }
+
+    /**
+     * state / PKCE / redirect_uri are what make the flow safe; extra params must not replace them.
+     *
+     * @return list<array{string}>
+     */
+    public static function reservedParams(): array
+    {
+        return [['response_type'], ['client_id'], ['redirect_uri'], ['state'], ['code_challenge'], ['code_challenge_method']];
+    }
+
+    #[DataProvider('reservedParams')]
+    public function testCreateAuthorizationUrlRejectsExtraParamsOverridingAReservedKey(string $key): void
+    {
+        $client = $this->makeClient();
+
+        $this->expectException(OAuthException::class);
+        $this->expectExceptionMessage($key);
+
+        $client->createAuthorizationUrl([$key => 'attacker-value']);
+    }
+
+    public function testCreateAuthorizationUrlRejectsProviderAuthorizeParamsOverridingAReservedKey(): void
+    {
+        $provider = new OAuthProvider(
+            authorizeUrl: 'https://provider.example.com/oauth/authorize',
+            tokenUrl: 'https://provider.example.com/oauth/token',
+            clientId: 'client-id',
+            clientSecret: 'client-secret',
+            redirectUri: 'https://app.example.com/oauth/callback',
+            authorizeParams: ['code_challenge_method' => 'plain'],
+        );
+        $client = new OAuthClient($provider, new HttpClient(new FakeTransport()), new SessionOAuthStateStore());
+
+        $this->expectException(OAuthException::class);
+
+        $client->createAuthorizationUrl();
+    }
+
+    public function testRejectedAuthorizationUrlStoresNoPendingState(): void
+    {
+        $client = $this->makeClient();
+
+        try {
+            $client->createAuthorizationUrl(['state' => 'fixed']);
+        } catch (OAuthException) {
+        }
+
+        self::assertSame([], $_SESSION['_oauth_state'] ?? []);
+    }
+
+    public function testCreateAuthorizationUrlLetsExtraParamsOverrideTheScope(): void
+    {
+        $query = $this->queryOf($this->makeClient()->createAuthorizationUrl(['scope' => 'openid']));
+
+        self::assertSame('openid', $query['scope']);
     }
 
     public function testExchangeCodeSendsPkceVerifierAndReturnsToken(): void

@@ -23,6 +23,20 @@ final class OAuthClient
     private const int DEFAULT_STATE_TTL_SECONDS = 600;
 
     /**
+     * Authorization-request parameters this client controls; see createAuthorizationUrl().
+     *
+     * @var list<string>
+     */
+    public const array RESERVED_PARAMS = [
+        'response_type',
+        'client_id',
+        'redirect_uri',
+        'state',
+        'code_challenge',
+        'code_challenge_method',
+    ];
+
+    /**
      * OAuthClient Constructor
      *
      * @param OAuthProvider          $provider
@@ -42,12 +56,29 @@ final class OAuthClient
      * Build the authorization URL to redirect the user to, generating and
      * persisting a fresh state value and PKCE verifier.
      *
+     * Neither `$extraParams` nor the provider's `authorizeParams` may set one of
+     * RESERVED_PARAMS (response_type, client_id, redirect_uri, state,
+     * code_challenge, code_challenge_method): overriding them would silently
+     * defeat the state/PKCE protection, so it is rejected instead. Other keys
+     * (including `scope`) are merged in, `$extraParams` winning over provider defaults.
+     *
      * @param array<string, string> $extraParams Additional query parameters merged in, overriding provider defaults.
+     *
+     * @throws OAuthException When a reserved parameter would be overridden.
      *
      * @return string
      */
     public function createAuthorizationUrl(array $extraParams = []): string
     {
+        $overridden = array_intersect(self::RESERVED_PARAMS, array_keys($this->provider->authorizeParams + $extraParams));
+
+        if ($overridden !== []) {
+            throw new OAuthException(
+                'OAuth authorization parameters cannot override ' . implode(', ', $overridden)
+                . ' — they carry the state/PKCE protection and the registered redirect.'
+            );
+        }
+
         $state = bin2hex(random_bytes(32));
         $verifier = Pkce::generateVerifier();
 

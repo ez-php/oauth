@@ -198,7 +198,7 @@ Run from the new module root (requires `"ez-php/docker": "^2.0"` in `require-dev
 vendor/bin/docker-init
 ```
 
-This copies `Dockerfile`, `docker-compose.yml`, `.env.example`, `start.sh`, and `docker/` into the module, replacing `{{MODULE_NAME}}` placeholders. Existing files are never overwritten.
+This copies `Dockerfile`, `docker-compose.yml`, `.env.example`, `start.sh`, and `docker/` into the module, replacing `{{MODULE_NAME}}` placeholders (`docker/db/`, the MySQL init script, only with `--services=mysql`). Existing files are never overwritten.
 
 Pass `--services` to merge MySQL/Redis/Meilisearch/Memcached/Mailpit service definitions directly into `docker-compose.yml` and uncomment the matching sections in `.env.example`, instead of adapting them by hand afterward:
 
@@ -243,7 +243,8 @@ After scaffolding:
 | `ez-php/feature-flags` | — | 6385 (`REDIS_HOST_PORT`) | — |
 | `ez-php/scheduler` | — | 6386 (`REDIS_HOST_PORT`) | — |
 | `ez-php/session` | — | 6387 (`REDIS_HOST_PORT`) | — |
-| **next free** | **3312** | **6388** | **7702** |
+| `ez-php/metrics` | — | 6388 (`REDIS_HOST_PORT`) | — |
+| **next free** | **3312** | **6389** | **7702** |
 
 Only set a port for services the module actually uses. Modules without external services need no port config.
 
@@ -281,7 +282,7 @@ tests/
   PkceTest.php                  — verifier format, RFC 7636 test vector, determinism
   OAuthTokenTest.php            — fromArray() parsing/defaults/validation, isExpired()
   SessionOAuthStateStoreTest.php — put/pull, one-time use, expiry, pruning + MAX_PENDING cap, inactive-session guard
-  OAuthClientTest.php           — authorization URL shape, PKCE/state round-trip via FakeTransport, refresh, error paths
+  OAuthClientTest.php           — authorization URL shape, reserved-parameter rejection, PKCE/state round-trip via FakeTransport, refresh, error paths
 ```
 
 ---
@@ -292,7 +293,7 @@ tests/
 
 | Method | Behaviour |
 |---|---|
-| `createAuthorizationUrl(array $extraParams = [])` | Generates state + PKCE verifier, persists them via `OAuthStateStoreInterface`, returns the full authorize-endpoint URL (`response_type=code`, `code_challenge_method=S256`, ...) |
+| `createAuthorizationUrl(array $extraParams = [])` | Generates state + PKCE verifier, persists them via `OAuthStateStoreInterface`, returns the full authorize-endpoint URL (`response_type=code`, `code_challenge_method=S256`, ...). Provider `authorizeParams` and `$extraParams` are merged in (`scope` may be overridden), but setting any of `OAuthClient::RESERVED_PARAMS` (`response_type`, `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method`) throws `OAuthException` before any state is stored |
 | `exchangeCode(string $code, string $state)` | Redeems the state (one-time use) for its verifier, POSTs `grant_type=authorization_code` + `code_verifier` to the token endpoint via `ez-php/http-client`, returns an `OAuthToken` |
 | `refresh(string $refreshToken)` | POSTs `grant_type=refresh_token` to the token endpoint, returns a new `OAuthToken` |
 
@@ -311,6 +312,7 @@ tests/
 ## Design Decisions and Constraints
 
 - **PKCE (S256) and `state` are mandatory, not optional.** There is no code path that skips either — every authorization URL includes a `code_challenge`, and `exchangeCode()` always requires a verifier recovered from the state store. This is a security-critical flow (TODO.md's own assessment); making PKCE opt-in would let an application accidentally ship the weaker plain authorization-code flow.
+- **Reserved authorization parameters are rejected, not merged.** `array_merge()` used to let `authorizeParams`/`$extraParams` silently replace `state`, `code_challenge`, `code_challenge_method` (e.g. with `plain`) or `redirect_uri` — exactly the values the class exists to control. Throwing makes such a configuration fail loudly at the first redirect instead of quietly disabling CSRF/PKCE protection; dropping the key silently was rejected for the same reason.
 - **No provider catalog.** `OAuthProvider` is a generic config object; there are no `GoogleProvider`/`GitHubProvider` subclasses. Per-provider quirks (non-standard token response fields, extra authorize params) are handled via `OAuthProvider::$authorizeParams` and `OAuthToken::fromArray()`'s tolerant parsing, not per-provider classes.
 - **No user-info fetching or `ez-php/auth` docking class.** The module stops at `OAuthToken`. Calling the provider's user-info endpoint and mapping the response onto an application `UserInterface` is application code — the shape of that response is entirely provider-specific, so any generic abstraction here would be speculative. `ez-php/auth` is not modified; applications typically implement `UserProviderInterface` themselves once they have the profile data. See README.md "Docking into ez-php/auth".
 - **No service provider.** Unlike `AuthServiceProvider`/`JwtServiceProvider`, there is no `OAuthServiceProvider` — an application may need multiple `OAuthClient` instances (one per provider: Google, GitHub, ...) with different credentials, so a single container binding would not generalize. Applications construct `OAuthClient` directly, same as `IdempotencyMiddleware`.
