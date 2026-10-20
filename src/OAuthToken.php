@@ -62,18 +62,80 @@ final readonly class OAuthToken
     }
 
     /**
+     * Rebuild a token from toStorage() output (a stored token keeps its original issuedAt).
+     *
+     * @param array<string, mixed> $data
+     *
+     * @return self
+     * @throws OAuthException When the stored data has no access token.
+     */
+    public static function fromStorage(array $data): self
+    {
+        $token = self::fromArray($data);
+        $issuedAt = $data['issued_at'] ?? null;
+
+        return is_numeric($issuedAt) ? $token->withIssuedAt((int) $issuedAt) : $token;
+    }
+
+    /**
+     * Serialisable form for an OAuthTokenStoreInterface: the token endpoint fields plus `issued_at`.
+     *
+     * @return array{access_token: string, token_type: string, expires_in: int|null, refresh_token: string|null, scope: string|null, issued_at: int}
+     */
+    public function toStorage(): array
+    {
+        return [
+            'access_token' => $this->accessToken,
+            'token_type' => $this->tokenType,
+            'expires_in' => $this->expiresIn,
+            'refresh_token' => $this->refreshToken,
+            'scope' => $this->scope,
+            'issued_at' => $this->issuedAt,
+        ];
+    }
+
+    /**
+     * Copy with a different refresh token — used to keep the previous one when a
+     * refresh response omits it (providers may rotate it or not).
+     *
+     * @param string|null $refreshToken
+     *
+     * @return self
+     */
+    public function withRefreshToken(?string $refreshToken): self
+    {
+        return new self($this->accessToken, $this->tokenType, $this->expiresIn, $refreshToken, $this->scope, $this->issuedAt);
+    }
+
+    /**
+     * Copy with a different issuance timestamp.
+     *
+     * @param int $issuedAt
+     *
+     * @return self
+     */
+    public function withIssuedAt(int $issuedAt): self
+    {
+        return new self($this->accessToken, $this->tokenType, $this->expiresIn, $this->refreshToken, $this->scope, $issuedAt);
+    }
+
+    /**
      * Whether the token's lifetime has elapsed since it was issued.
      *
      * Always false when the provider did not return an expiry.
      *
+     * @param int      $leewaySeconds Treat the token as expired this many seconds early, so a
+     *                                request does not race the expiry (clock skew, slow request).
+     * @param int|null $now           Current Unix time; null = time(). Injectable for tests.
+     *
      * @return bool
      */
-    public function isExpired(): bool
+    public function isExpired(int $leewaySeconds = 0, ?int $now = null): bool
     {
         if ($this->expiresIn === null) {
             return false;
         }
 
-        return time() >= ($this->issuedAt + $this->expiresIn);
+        return ($now ?? time()) + $leewaySeconds >= ($this->issuedAt + $this->expiresIn);
     }
 }

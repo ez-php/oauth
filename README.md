@@ -89,6 +89,101 @@ session before using it (e.g. a session-start middleware ahead of the OAuth
 routes). Implement `OAuthStateStoreInterface` directly for another backing
 store (e.g. a short-lived cache entry) if sessions aren't available.
 
+### Stored tokens and automatic refresh
+
+For API clients that call the provider on behalf of a user, store the token once and let
+`OAuthTokenManager` handle expiry:
+
+```php
+use EzPhp\OAuth\OAuthTokenManager;
+use EzPhp\OAuth\PdoOAuthTokenStore;
+
+$store   = new PdoOAuthTokenStore($pdo);                        // creates `oauth_tokens` if needed
+$manager = new OAuthTokenManager($client, $store, "spotify:{$userId}", leewaySeconds: 30);
+
+$manager->store($client->exchangeCode($code, $state));          // after the callback
+
+$response = $manager->send($http->get('https://api.spotify.com/v1/me'));
+```
+
+- The token is refreshed before a request when it expires within the leeway.
+- A `401` triggers one refresh and one retry of the request.
+- A refresh response without a `refresh_token` keeps the previous one.
+- A rejected refresh (`400`/`401`, e.g. `invalid_grant`) deletes the stored token — the
+  user has to authorize again; `5xx`/`429` and network errors keep it.
+
+`authorize($request)` only adds the `Authorization: Bearer` header; `InMemoryOAuthTokenStore`
+is the store for tests. Implement `OAuthTokenStoreInterface` for another backend.
+
+#### Tokens at rest
+
+`PdoOAuthTokenStore` (like `InMemoryOAuthTokenStore`) keeps the token **unencrypted**: the
+`token` column holds the access and refresh token as plain JSON. A refresh token is a
+long-lived credential, so either restrict access to the table like any other secret store,
+or wrap the store in an encrypting decorator — `OAuthTokenStoreInterface` is three methods,
+and the decorator works over any backend:
+
+```php
+use EzPhp\OAuth\OAuthException;
+use EzPhp\OAuth\OAuthToken;
+use EzPhp\OAuth\OAuthTokenStoreInterface;
+
+final readonly class EncryptedOAuthTokenStore implements OAuthTokenStoreInterface
+{
+    /** @param string $key 32 random bytes (SODIUM_CRYPTO_SECRETBOX_KEYBYTES), kept outside the database */
+    public function __construct(private OAuthTokenStoreInterface $inner, private string $key)
+    {
+    }
+
+    public function get(string $key): ?OAuthToken
+    {
+        $token = $this->inner->get($key);
+
+        return $token === null ? null : $this->map($token, $this->open(...));
+    }
+
+    public function put(string $key, OAuthToken $token): void
+    {
+        $this->inner->put($key, $this->map($token, $this->seal(...)));
+    }
+
+    public function forget(string $key): void
+    {
+        $this->inner->forget($key);
+    }
+
+    /** @param \Closure(string): string $codec */
+    private function map(OAuthToken $t, \Closure $codec): OAuthToken
+    {
+        $refresh = $t->refreshToken === null ? null : $codec($t->refreshToken);
+
+        return new OAuthToken($codec($t->accessToken), $t->tokenType, $t->expiresIn, $refresh, $t->scope, $t->issuedAt);
+    }
+
+    private function seal(string $plain): string
+    {
+        $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+
+        return base64_encode($nonce . sodium_crypto_secretbox($plain, $nonce, $this->key));
+    }
+
+    private function open(string $sealed): string
+    {
+        $raw = base64_decode($sealed, true);
+        $nonce = substr((string) $raw, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+        $plain = sodium_crypto_secretbox_open(substr((string) $raw, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES), $nonce, $this->key);
+
+        return $plain !== false ? $plain : throw new OAuthException('Stored OAuth token cannot be decrypted.');
+    }
+}
+
+$store = new EncryptedOAuthTokenStore(new PdoOAuthTokenStore($pdo), $encryptionKey);
+```
+
+Needs `ext-sodium`. Rotating `$encryptionKey` makes existing rows undecryptable (the user
+re-authorizes); the module ships no encrypting store itself, since key management is the
+application's concern.
+
 ### Docking into `ez-php/auth`
 
 This module stops at the token. Turning an `OAuthToken` into a logged-in

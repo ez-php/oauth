@@ -78,4 +78,32 @@ final class OAuthTokenTest extends TestCase
 
         self::assertFalse($token->isExpired());
     }
+
+    public function testIsExpiredHonoursLeewayAndInjectedClock(): void
+    {
+        $token = new OAuthToken('a', 'bearer', 100, null, null, 1000);
+
+        self::assertFalse($token->isExpired(0, 1099));
+        self::assertTrue($token->isExpired(0, 1100));
+        self::assertTrue($token->isExpired(30, 1070), 'expires within the leeway');
+        self::assertFalse($token->isExpired(30, 1069));
+    }
+
+    public function testStorageRoundTripKeepsIssuedAt(): void
+    {
+        $token = new OAuthToken('a', 'mac', 100, 'r', 'read write', 1000);
+
+        $restored = OAuthToken::fromStorage($token->toStorage());
+
+        self::assertEquals($token, $restored);
+    }
+
+    public function testWithersReturnModifiedCopies(): void
+    {
+        $token = new OAuthToken('a', 'bearer', 100, 'r', null, 1000);
+
+        self::assertSame('r2', $token->withRefreshToken('r2')->refreshToken);
+        self::assertSame(5, $token->withIssuedAt(5)->issuedAt);
+        self::assertSame('r', $token->refreshToken);
+    }
 }

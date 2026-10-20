@@ -271,7 +271,11 @@ When adding a new module, add `"$ROOT/modules/<name>"` to the `PACKAGES` array i
 ```
 src/
   OAuthProvider.php          — immutable config for one authorization server (endpoints, credentials, scopes)
-  OAuthToken.php              — immutable token endpoint response (access/refresh token, expiry, scope)
+  OAuthToken.php              — immutable token endpoint response (access/refresh token, expiry, scope); isExpired(leeway, now), toStorage()/fromStorage(), withRefreshToken()/withIssuedAt()
+  OAuthTokenStoreInterface.php — persistent store for issued tokens by key: get/put/forget
+  InMemoryOAuthTokenStore.php  — per-instance OAuthTokenStoreInterface (tests, scripts)
+  PdoOAuthTokenStore.php       — plain-PDO OAuthTokenStoreInterface; auto-created `oauth_tokens` table, driver-aware upsert
+  OAuthTokenManager.php        — stored token → bearer requests: refresh on (near) expiry, 401 → refresh + retry once, keep refresh token, drop on 400/401
   OAuthStateStoreInterface.php — backing store for the pending state/PKCE-verifier pair between redirect and callback
   SessionOAuthStateStore.php  — $_SESSION-backed OAuthStateStoreInterface implementation
   Pkce.php                     — RFC 7636 code verifier/challenge generation (S256 only)
@@ -283,6 +287,10 @@ tests/
   OAuthTokenTest.php            — fromArray() parsing/defaults/validation, isExpired()
   SessionOAuthStateStoreTest.php — put/pull, one-time use, expiry, pruning + MAX_PENDING cap, inactive-session guard
   OAuthClientTest.php           — authorization URL shape, reserved-parameter rejection, PKCE/state round-trip via FakeTransport, refresh, error paths
+  OAuthTokenStoreTest.php       — one contract run on the in-memory and PDO (SQLite) stores; table-name validation, corrupt rows
+  OAuthTokenStoreMysqlTest.php  — PdoOAuthTokenStore's MySQL DDL and ON DUPLICATE KEY upsert (incl. unchanged rewrite); skipped without DB_HOST
+  OAuthTokenManagerTest.php     — leeway refresh, 401 retry-once, refresh-token keep, delete on 400 / keep on 5xx and network errors
+  Support/OAuthSequenceTransport.php — scripted, recording TransportInterface (fails on an unexpected request)
 ```
 
 ---
@@ -301,6 +309,10 @@ tests/
 
 **`OAuthToken`** — value object for the token endpoint response. `OAuthToken::fromArray()` parses the decoded JSON, defaulting `token_type` to `bearer` and throwing `OAuthException` if `access_token` is missing/empty. `isExpired()` compares `issuedAt + expiresIn` against the current time, always `false` when the provider omitted `expires_in`.
 
+**`OAuthTokenStoreInterface`** (`InMemoryOAuthTokenStore`, `PdoOAuthTokenStore`) — persists tokens under an application-chosen key (`"spotify:42"`). The PDO store takes a plain `PDO` (no `ez-php/contracts` dependency), keeps `OAuthToken::toStorage()` JSON in `oauth_tokens` and creates the table itself, MySQL or portable SQLite/PostgreSQL DDL, like `ez-php/session`'s database driver.
+
+**`OAuthTokenManager`** — one stored token, used for bearer requests: `token()` refreshes when the token expires within `$leewaySeconds` (default 30, injectable clock), `authorize(HttpRequest)` adds `Authorization: Bearer`, `send(HttpRequest)` additionally refreshes and retries **once** on a 401. A refresh without a new refresh token keeps the old one; a rejected refresh (`OAuthException` status 400/401) deletes the stored token, while 5xx/429 and network errors keep it.
+
 **`OAuthException`** — the module's only exception. A non-2xx token endpoint answer sets the readonly `?int $status` and `?string $error` (RFC 6749 §5.2 `error` field, when the body is JSON with a string `error`); every other failure leaves both `null`. One class with optional fields rather than a subclass hierarchy: the one decision callers need — "grant rejected, drop the refresh token" vs. "provider trouble, retry" — is a check on `$error`/`$status`, not a different catch block.
 
 **`Pkce`** — static-only helper: `generateVerifier()` (64 random bytes, base64url) and `challengeFor($verifier)` (S256/base64url). No `plain` transform — S256 is the only method offered.
@@ -317,13 +329,16 @@ tests/
 - **No user-info fetching or `ez-php/auth` docking class.** The module stops at `OAuthToken`. Calling the provider's user-info endpoint and mapping the response onto an application `UserInterface` is application code — the shape of that response is entirely provider-specific, so any generic abstraction here would be speculative. `ez-php/auth` is not modified; applications typically implement `UserProviderInterface` themselves once they have the profile data. See README.md "Docking into ez-php/auth".
 - **No service provider.** Unlike `AuthServiceProvider`/`JwtServiceProvider`, there is no `OAuthServiceProvider` — an application may need multiple `OAuthClient` instances (one per provider: Google, GitHub, ...) with different credentials, so a single container binding would not generalize. Applications construct `OAuthClient` directly, same as `IdempotencyMiddleware`.
 - **Token exchange goes through `ez-php/http-client`'s `TransportInterface` seam** (a hard `require`, not a soft dependency like `ez-php/idempotency`'s cache) — `HttpClient` is constructed by the application and injected, so tests substitute `FakeTransport` and never hit the network.
+- **Token refresh is a manager over the store, not an `HttpClient` decorator.** `OAuthTokenManager::send()` wraps one request — the 401-retry needs to resend it with a new header, which `HttpRequest`'s clone-based withers make trivial — instead of a transport decorator that would have to know which token belongs to which request. Concurrent refreshes from several processes are not serialised; providers that invalidate a refresh token on use need a lock at the application level.
+- **Tokens are stored unencrypted; encryption is a decorator, not a feature.** `PdoOAuthTokenStore` writes `OAuthToken::toStorage()` JSON as-is. Encrypting at rest needs a key the application manages (rotation, storage outside the database), so the module documents an `ext-sodium` decorator over `OAuthTokenStoreInterface` in the README instead of shipping one with an opinion on key handling.
 - **State store is a hard interface dependency, `SessionOAuthStateStore` the only bundled implementation.** Applications without PHP sessions (e.g. a stateless API gateway) implement `OAuthStateStoreInterface` against their own short-lived store (cache, signed cookie, ...).
 
 ---
 
 ## Testing Approach
 
-- No external services: state storage tests use real PHP sessions (`session_start()`/`session_write_close()` in `setUp()`/`tearDown()`, same approach as `ez-php/auth`'s session tests); HTTP tests use `ez-php/http-client`'s `FakeTransport` — no real network calls, no Docker services beyond the app container.
+- `OAuthTokenStoreMysqlTest` is the one exception: it runs the PDO store's MySQL branches against the root stack's MySQL (`DB_HOST`/`DB_TESTING_DATABASE`) and skips when `DB_HOST` is unset — standalone CI included, like `ez-php/auth`'s migration test.
+- No external services otherwise: state storage tests use real PHP sessions (`session_start()`/`session_write_close()` in `setUp()`/`tearDown()`, same approach as `ez-php/auth`'s session tests); HTTP tests use `ez-php/http-client`'s `FakeTransport` — no real network calls, no Docker services beyond the app container.
 - `PkceTest` includes the RFC 7636 Appendix B test vector to pin the S256 derivation exactly, not just structurally.
 - Test classes live in the shared `Tests\` namespace but must be uniquely named
   across the whole monorepo — the root `phpunit.xml` loads every package in one
