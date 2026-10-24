@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use EzPhp\Cache\ArrayDriver;
 use EzPhp\HttpClient\FakeTransport;
 use EzPhp\HttpClient\HttpClient;
 use EzPhp\HttpClient\HttpResponse;
@@ -103,6 +104,46 @@ final class OidcIdTokenValidatorTest extends TestCase
         $validator = $this->validator([self::rsa()->jwk()], [self::rsa()->jwk(), $rotated->jwk()]);
 
         self::assertSame('user-123', $validator->validate($rotated->sign(self::claims()), 'n-1')->subject);
+    }
+
+    public function testForcedRefreshesAreThrottledWithinTheCooldown(): void
+    {
+        $now = self::NOW;
+        $keys = ['keys' => [self::rsa()->jwk()]];
+        $transport = FakeTransport::sequence([HttpResponse::fake($keys), HttpResponse::fake($keys), HttpResponse::fake($keys)]);
+        $jwks = new JwksProvider(new HttpClient($transport), self::JWKS_URI, refreshCooldownSeconds: 60, clock: static function () use (&$now): int {
+            return $now;
+        });
+        $validator = new IdTokenValidator($jwks, self::ISSUER, 'client-id', 60, static fn (): int => self::NOW);
+        $unknownKid = static function () use ($validator): void {
+            try {
+                $validator->validate(self::rsa()->sign(self::claims(), ['kid' => 'k-' . bin2hex(random_bytes(4))]), 'n-1');
+                self::fail('An unknown kid must be rejected.');
+            } catch (OAuthException) {
+            }
+        };
+
+        $unknownKid(); // initial fetch + one forced refresh
+        $unknownKid(); // inside the cooldown: no further fetch
+        self::assertCount(2, $transport->getRecorded());
+
+        $now += 61;
+        $unknownKid(); // cooldown over: refreshes again
+        self::assertCount(3, $transport->getRecorded());
+    }
+
+    public function testTheRefreshCooldownIsSharedThroughTheCache(): void
+    {
+        $cache = new ArrayDriver();
+        $keys = ['keys' => [self::rsa()->jwk()]];
+        $first = FakeTransport::sequence([HttpResponse::fake($keys), HttpResponse::fake($keys)]);
+        $second = new FakeTransport();
+
+        (new JwksProvider(new HttpClient($first), self::JWKS_URI, $cache))->keys(refresh: true);
+        $other = (new JwksProvider(new HttpClient($second), self::JWKS_URI, $cache))->keys(refresh: true);
+
+        self::assertSame([self::rsa()->jwk()], $other);
+        self::assertSame([], $second->getRecorded());
     }
 
     public function testTokenWithoutKidUsesTheOnlyMatchingKey(): void

@@ -212,7 +212,8 @@ $email = $token->idTokenClaims->get('email');
 
 What is checked: the signature (RS256 or ES256 only — `none`, HMAC and other algorithms are rejected),
 with the JWKS key selected by `kid` and matching the algorithm's key type (an unknown `kid` refetches the
-key set once, for key rotation); `iss` equals the discovered issuer; `aud` contains the client ID and `azp`
+key set once, for key rotation — at most once per `refreshCooldownSeconds`, default 60, shared through the cache, so random
+`kid`s cannot turn token validation into an outbound request per call); `iss` equals the discovered issuer; `aud` contains the client ID and `azp`
 is the client ID when present or when there are several audiences; `exp`, `iat` and `nbf` with 60 s clock
 leeway; a non-empty `sub`; and the `nonce` from the authorization request. Any failure throws
 `OAuthException`. `discover()` also checks that the document's `issuer` is the one asked for.
