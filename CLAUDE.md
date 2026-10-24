@@ -281,7 +281,12 @@ src/
   SessionOAuthStateStore.php  — $_SESSION-backed OAuthStateStoreInterface implementation
   Pkce.php                     — RFC 7636 code verifier/challenge generation (S256 only)
   OAuthException.php           — thrown on invalid/expired state or a token endpoint error; carries `status` / RFC 6749 `error` for the latter
-  OAuthClient.php               — the flow: createAuthorizationUrl(), exchangeCode(), refresh()
+  OAuthClient.php               — the flow: createAuthorizationUrl(), exchangeCode(), refresh(); nonce + id_token verification for `openid` logins
+  Oidc/
+    ProviderMetadata.php        — OpenID discovery document (`/.well-known/openid-configuration`): discover() checks the issuer; toProvider()
+    JwksProvider.php            — fetches `jwks_uri`, keeps it in memory and optionally in ez-php/cache; refresh on demand
+    IdTokenValidator.php        — RS256/ES256 JWS verification against the JWKS (kid + key type), iss/aud/azp/exp/iat/nbf/sub/nonce checks
+    IdTokenClaims.php           — verified claims value object: subject, issuer, audience, expiresAt, issuedAt, nonce, get()
 tests/
   TestCase.php                 — base test case
   PkceTest.php                  — verifier format, RFC 7636 test vector, determinism
@@ -291,7 +296,10 @@ tests/
   OAuthTokenStoreTest.php       — one contract run on the in-memory and PDO (SQLite) stores; table-name validation, corrupt rows
   OAuthTokenStoreMysqlTest.php  — PdoOAuthTokenStore's MySQL DDL and ON DUPLICATE KEY upsert (incl. unchanged rewrite); skipped without DB_HOST
   OAuthTokenManagerTest.php     — leeway refresh, 401 retry-once, refresh-token keep, delete on 400 / keep on 5xx and network errors
+  OidcIdTokenValidatorTest.php  — RS256/ES256 tokens, kid rotation refresh, and every rejection path (alg none/HS256, crit, key type, iss, aud/azp, exp/iat/nbf leeway, sub, nonce, malformed)
+  OidcLoginFlowTest.php         — discovery (issuer check, incomplete/unreadable docs), JWKS caching, nonce in the URL, verified claims from exchangeCode(), missing id_token, plain OAuth unchanged
   Support/OAuthSequenceTransport.php — scripted, recording TransportInterface (fails on an unexpected request)
+  Support/OAuthOidcSigner.php   — generates RSA/P-256 keys, publishes JWKs, signs JWS tokens (ES256 as raw r||s)
 ```
 
 ---
@@ -302,13 +310,13 @@ tests/
 
 | Method | Behaviour |
 |---|---|
-| `createAuthorizationUrl(array $extraParams = [])` | Generates state + PKCE verifier, persists them via `OAuthStateStoreInterface`, returns the full authorize-endpoint URL (`response_type=code`, `code_challenge_method=S256`, ...). Provider `authorizeParams` and `$extraParams` are merged in (`scope` may be overridden), but setting any of `OAuthClient::RESERVED_PARAMS` (`response_type`, `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method`) throws `OAuthException` before any state is stored |
-| `exchangeCode(string $code, string $state)` | Redeems the state (one-time use) for its verifier, POSTs `grant_type=authorization_code` + `code_verifier` to the token endpoint via `ez-php/http-client`, returns an `OAuthToken` |
+| `createAuthorizationUrl(array $extraParams = [])` | Generates state + PKCE verifier, persists them via `OAuthStateStoreInterface`, returns the full authorize-endpoint URL (`response_type=code`, `code_challenge_method=S256`, ...). Provider `authorizeParams` and `$extraParams` are merged in (`scope` may be overridden), but setting any of `OAuthClient::RESERVED_PARAMS` (`response_type`, `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method`, `nonce`) throws `OAuthException` before any state is stored. An `openid` scope adds a stored `nonce` |
+| `exchangeCode(string $code, string $state)` | Redeems the state (one-time use) for its verifier, POSTs `grant_type=authorization_code` + `code_verifier` to the token endpoint via `ez-php/http-client`, returns an `OAuthToken`. For an `openid` login with an `IdTokenValidator` it requires and verifies the `id_token` against the stored nonce and sets `idTokenClaims` |
 | `refresh(string $refreshToken)` | POSTs `grant_type=refresh_token` to the token endpoint, returns a new `OAuthToken` |
 
 **`OAuthProvider`** — pure config value object: `authorizeUrl`, `tokenUrl`, `clientId`, `clientSecret`, `redirectUri`, `scopes`, `authorizeParams`. No built-in catalog of specific providers — the application supplies its own.
 
-**`OAuthToken`** — value object for the token endpoint response. `OAuthToken::fromArray()` parses the decoded JSON, defaulting `token_type` to `bearer` and throwing `OAuthException` if `access_token` is missing/empty. `isExpired()` compares `issuedAt + expiresIn` against the current time, always `false` when the provider omitted `expires_in`.
+**`OAuthToken`** — value object for the token endpoint response. `OAuthToken::fromArray()` parses the decoded JSON, defaulting `token_type` to `bearer` and throwing `OAuthException` if `access_token` is missing/empty. `isExpired()` compares `issuedAt + expiresIn` against the current time, always `false` when the provider omitted `expires_in`. `idToken` holds a raw `id_token`; `idTokenClaims` is set only after `IdTokenValidator` verified it. Neither is part of `toStorage()` — the ID token proves one login, it is not a credential to keep.
 
 **`OAuthTokenStoreInterface`** (`InMemoryOAuthTokenStore`, `PdoOAuthTokenStore`) — persists tokens under an application-chosen key (`"spotify:42"`). The PDO store takes a plain `PDO` (no `ez-php/contracts` dependency), keeps `OAuthToken::toStorage()` JSON in `oauth_tokens` and creates the table itself, MySQL or portable SQLite/PostgreSQL DDL, like `ez-php/session`'s database driver.
 
@@ -327,6 +335,7 @@ tests/
 - **PKCE (S256) and `state` are mandatory, not optional.** There is no code path that skips either — every authorization URL includes a `code_challenge`, and `exchangeCode()` always requires a verifier recovered from the state store. This is a security-critical flow (TODO.md's own assessment); making PKCE opt-in would let an application accidentally ship the weaker plain authorization-code flow.
 - **Reserved authorization parameters are rejected, not merged.** `array_merge()` used to let `authorizeParams`/`$extraParams` silently replace `state`, `code_challenge`, `code_challenge_method` (e.g. with `plain`) or `redirect_uri` — exactly the values the class exists to control. Throwing makes such a configuration fail loudly at the first redirect instead of quietly disabling CSRF/PKCE protection; dropping the key silently was rejected for the same reason.
 - **No provider catalog.** `OAuthProvider` is a generic config object; there are no `GoogleProvider`/`GitHubProvider` subclasses. Per-provider quirks (non-standard token response fields, extra authorize params) are handled via `OAuthProvider::$authorizeParams` and `OAuthToken::fromArray()`'s tolerant parsing, not per-provider classes.
+- **OpenID Connect is an opt-in validator, not a separate client.** `createAuthorizationUrl()` adds a random `nonce` whenever the effective scope contains `openid` and stores it with the state; `nonce` joined `RESERVED_PARAMS`. `exchangeCode()` verifies the ID token only when an `IdTokenValidator` was injected — without one the raw `idToken` is returned unverified (documented), so plain OAuth clients are unchanged. Signature algorithms are an allow-list (RS256, ES256): `none` and HMAC would let anyone holding the client secret — or nobody — mint tokens, and an algorithm/key-type mismatch (RS256 header naming an EC key) is rejected by the key lookup. JWK → OpenSSL conversion builds the SubjectPublicKeyInfo DER by hand and ES256's raw `r||s` signature is re-encoded as DER — no JOSE library. `ProviderMetadata::discover()` enforces that the document's `issuer` is the requested one (Discovery §4.3); caching discovery and JWKS is the application's choice (`fromArray()`, an optional `ez-php/cache` store — a `suggest` + `require-dev`). Out of scope: OIDC logout/session management, implicit/hybrid flows, JWE.
 - **No user-info fetching or `ez-php/auth` docking class.** The module stops at `OAuthToken`. Calling the provider's user-info endpoint and mapping the response onto an application `UserInterface` is application code — the shape of that response is entirely provider-specific, so any generic abstraction here would be speculative. `ez-php/auth` is not modified; applications typically implement `UserProviderInterface` themselves once they have the profile data. See README.md "Docking into ez-php/auth".
 - **No service provider.** Unlike `AuthServiceProvider`/`JwtServiceProvider`, there is no `OAuthServiceProvider` — an application may need multiple `OAuthClient` instances (one per provider: Google, GitHub, ...) with different credentials, so a single container binding would not generalize. Applications construct `OAuthClient` directly, same as `IdempotencyMiddleware`.
 - **Token exchange goes through `ez-php/http-client`'s `TransportInterface` seam** (a hard `require`, not a soft dependency like `ez-php/idempotency`'s cache) — `HttpClient` is constructed by the application and injected, so tests substitute `FakeTransport` and never hit the network.

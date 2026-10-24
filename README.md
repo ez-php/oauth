@@ -184,9 +184,46 @@ Needs `ext-sodium`. Rotating `$encryptionKey` makes existing rows undecryptable 
 re-authorizes); the module ships no encrypting store itself, since key management is the
 application's concern.
 
+### OpenID Connect (SSO)
+
+For an OpenID Provider (Google, Microsoft Entra ID, Keycloak, ...), read the endpoints from its
+discovery document and give the client an `IdTokenValidator`. With `openid` in the scope,
+`createAuthorizationUrl()` adds a `nonce`, and `exchangeCode()` requires the `id_token`, verifies it and
+returns its claims — no separate user-info call needed:
+
+```php
+use EzPhp\OAuth\Oidc\IdTokenValidator;
+use EzPhp\OAuth\Oidc\JwksProvider;
+use EzPhp\OAuth\Oidc\ProviderMetadata;
+
+$metadata = ProviderMetadata::discover($http, 'https://accounts.google.com'); // cache it: fromArray()
+$provider = $metadata->toProvider($clientId, $clientSecret, 'https://app.example.com/oauth/callback', ['email', 'profile']);
+
+$jwks = new JwksProvider($http, $metadata->jwksUri, $cache);     // $cache: optional ez-php/cache store
+$validator = new IdTokenValidator($jwks, $metadata->issuer, $clientId);
+
+$client = new OAuthClient($provider, $http, new SessionOAuthStateStore(), idTokenValidator: $validator);
+
+// callback
+$token = $client->exchangeCode($_GET['code'], $_GET['state']);
+$userId = $token->idTokenClaims->subject;          // stable provider user ID
+$email = $token->idTokenClaims->get('email');
+```
+
+What is checked: the signature (RS256 or ES256 only — `none`, HMAC and other algorithms are rejected),
+with the JWKS key selected by `kid` and matching the algorithm's key type (an unknown `kid` refetches the
+key set once, for key rotation); `iss` equals the discovered issuer; `aud` contains the client ID and `azp`
+is the client ID when present or when there are several audiences; `exp`, `iat` and `nbf` with 60 s clock
+leeway; a non-empty `sub`; and the `nonce` from the authorization request. Any failure throws
+`OAuthException`. `discover()` also checks that the document's `issuer` is the one asked for.
+
+Without a validator the raw `$token->idToken` is still returned, unverified — do not trust its contents.
+The ID token is not part of `toStorage()`. Out of scope: OIDC logout/session management, implicit and
+hybrid flows, encrypted (JWE) ID tokens, and a catalog of providers.
+
 ### Docking into `ez-php/auth`
 
-This module stops at the token. Turning an `OAuthToken` into a logged-in
+This module stops at the token (or the verified ID token claims). Turning an `OAuthToken` into a logged-in
 application user is application code: call the provider's user-info endpoint
 with the access token, resolve or create a local user record, and hand it to
 `EzPhp\Auth\Auth::login()` — commonly via an `ez-php/auth`

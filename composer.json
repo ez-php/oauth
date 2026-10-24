@@ -20,7 +20,11 @@
     "php": "^8.5",
     "ez-php/http-client": "^2.6.0"
   },
+  "suggest": {
+    "ez-php/cache": "Needed to share Oidc\\JwksProvider's fetched key set between requests"
+  },
   "require-dev": {
+    "ez-php/cache": "^2.6.0",
     "ez-php/docker": "^2.6.0",
     "phpunit/phpunit": "^13.0",
     "phpstan/phpstan": "^2.1",

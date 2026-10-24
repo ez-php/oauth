@@ -102,7 +102,7 @@ final class OAuthClientTest extends TestCase
      */
     public static function reservedParams(): array
     {
-        return [['response_type'], ['client_id'], ['redirect_uri'], ['state'], ['code_challenge'], ['code_challenge_method']];
+        return [['response_type'], ['client_id'], ['redirect_uri'], ['state'], ['code_challenge'], ['code_challenge_method'], ['nonce']];
     }
 
     #[DataProvider('reservedParams')]

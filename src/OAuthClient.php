@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace EzPhp\OAuth;
 
 use EzPhp\HttpClient\HttpClient;
+use EzPhp\OAuth\Oidc\IdTokenValidator;
 
 /**
  * Class OAuthClient
@@ -34,6 +35,7 @@ final class OAuthClient
         'state',
         'code_challenge',
         'code_challenge_method',
+        'nonce',
     ];
 
     /**
@@ -43,23 +45,27 @@ final class OAuthClient
      * @param HttpClient             $http
      * @param OAuthStateStoreInterface $stateStore
      * @param int                    $stateTtlSeconds How long a state/verifier pair remains redeemable.
+     * @param IdTokenValidator|null  $idTokenValidator OpenID Connect: verifies the id_token of an `openid`
+     *                                                  login in exchangeCode(); null leaves it unverified.
      */
     public function __construct(
         private readonly OAuthProvider $provider,
         private readonly HttpClient $http,
         private readonly OAuthStateStoreInterface $stateStore,
         private readonly int $stateTtlSeconds = self::DEFAULT_STATE_TTL_SECONDS,
+        private readonly ?IdTokenValidator $idTokenValidator = null,
     ) {
     }
 
     /**
      * Build the authorization URL to redirect the user to, generating and
-     * persisting a fresh state value and PKCE verifier.
+     * persisting a fresh state value and PKCE verifier — plus a `nonce` when the
+     * effective scope contains `openid` (OpenID Connect).
      *
      * Neither `$extraParams` nor the provider's `authorizeParams` may set one of
      * RESERVED_PARAMS (response_type, client_id, redirect_uri, state,
-     * code_challenge, code_challenge_method): overriding them would silently
-     * defeat the state/PKCE protection, so it is rejected instead. Other keys
+     * code_challenge, code_challenge_method, nonce): overriding them would silently
+     * defeat the state/PKCE/nonce protection, so it is rejected instead. Other keys
      * (including `scope`) are merged in, `$extraParams` winning over provider defaults.
      *
      * @param array<string, string> $extraParams Additional query parameters merged in, overriding provider defaults.
@@ -82,8 +88,6 @@ final class OAuthClient
         $state = bin2hex(random_bytes(32));
         $verifier = Pkce::generateVerifier();
 
-        $this->stateStore->put($state, ['verifier' => $verifier], $this->stateTtlSeconds);
-
         $query = array_merge(
             [
                 'response_type' => 'code',
@@ -98,11 +102,24 @@ final class OAuthClient
             $extraParams,
         );
 
+        $payload = ['verifier' => $verifier];
+
+        // OpenID Connect: bind the ID token to this authorization request.
+        if (in_array('openid', explode(' ', $query['scope']), true)) {
+            $payload['nonce'] = $query['nonce'] = bin2hex(random_bytes(16));
+        }
+
+        $this->stateStore->put($state, $payload, $this->stateTtlSeconds);
+
         return $this->provider->authorizeUrl . '?' . http_build_query($query);
     }
 
     /**
      * Redeem an authorization code returned on the callback for an access token.
+     *
+     * For an OpenID Connect login (`openid` scope) with an IdTokenValidator, the
+     * response's id_token is required and verified against the nonce stored with
+     * the state; its claims are on the returned token (`idTokenClaims`).
      *
      * @param string $code
      * @param string $state
@@ -118,7 +135,7 @@ final class OAuthClient
             throw new OAuthException('Invalid or expired OAuth state parameter.');
         }
 
-        return $this->requestToken([
+        $token = $this->requestToken([
             'grant_type' => 'authorization_code',
             'code' => $code,
             'redirect_uri' => $this->provider->redirectUri,
@@ -126,6 +143,18 @@ final class OAuthClient
             'client_secret' => $this->provider->clientSecret,
             'code_verifier' => $payload['verifier'],
         ]);
+
+        $nonce = $payload['nonce'] ?? null;
+
+        if (!is_string($nonce) || $this->idTokenValidator === null) {
+            return $token;
+        }
+
+        if ($token->idToken === null) {
+            throw new OAuthException('Token endpoint response is missing the "id_token" of an OpenID Connect login.');
+        }
+
+        return $token->withIdTokenClaims($this->idTokenValidator->validate($token->idToken, $nonce));
     }
 
     /**

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace EzPhp\OAuth;
 
+use EzPhp\OAuth\Oidc\IdTokenClaims;
+
 /**
  * Class OAuthToken
  *
@@ -22,6 +24,9 @@ final readonly class OAuthToken
      * @param string|null $refreshToken
      * @param string|null $scope
      * @param int         $issuedAt     Unix timestamp captured when the token was parsed.
+     * @param string|null $idToken      Raw OpenID Connect `id_token`, when the response carried one. Unverified
+     *                                  unless $idTokenClaims is set; not part of toStorage().
+     * @param IdTokenClaims|null $idTokenClaims Verified ID token claims (OAuthClient with an IdTokenValidator).
      */
     public function __construct(
         public string $accessToken,
@@ -30,6 +35,8 @@ final readonly class OAuthToken
         public ?string $refreshToken,
         public ?string $scope,
         public int $issuedAt,
+        public ?string $idToken = null,
+        public ?IdTokenClaims $idTokenClaims = null,
     ) {
     }
 
@@ -58,6 +65,7 @@ final readonly class OAuthToken
             refreshToken: is_string($data['refresh_token'] ?? null) ? $data['refresh_token'] : null,
             scope: is_string($data['scope'] ?? null) ? $data['scope'] : null,
             issuedAt: time(),
+            idToken: is_string($data['id_token'] ?? null) ? $data['id_token'] : null,
         );
     }
 
@@ -104,7 +112,7 @@ final readonly class OAuthToken
      */
     public function withRefreshToken(?string $refreshToken): self
     {
-        return new self($this->accessToken, $this->tokenType, $this->expiresIn, $refreshToken, $this->scope, $this->issuedAt);
+        return new self($this->accessToken, $this->tokenType, $this->expiresIn, $refreshToken, $this->scope, $this->issuedAt, $this->idToken, $this->idTokenClaims);
     }
 
     /**
@@ -116,7 +124,19 @@ final readonly class OAuthToken
      */
     public function withIssuedAt(int $issuedAt): self
     {
-        return new self($this->accessToken, $this->tokenType, $this->expiresIn, $this->refreshToken, $this->scope, $issuedAt);
+        return new self($this->accessToken, $this->tokenType, $this->expiresIn, $this->refreshToken, $this->scope, $issuedAt, $this->idToken, $this->idTokenClaims);
+    }
+
+    /**
+     * Copy carrying the verified ID token claims.
+     *
+     * @param IdTokenClaims $claims
+     *
+     * @return self
+     */
+    public function withIdTokenClaims(IdTokenClaims $claims): self
+    {
+        return new self($this->accessToken, $this->tokenType, $this->expiresIn, $this->refreshToken, $this->scope, $this->issuedAt, $this->idToken, $claims);
     }
 
     /**
