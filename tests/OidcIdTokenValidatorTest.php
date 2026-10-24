@@ -14,12 +14,11 @@ use EzPhp\OAuth\Oidc\IdTokenValidator;
 use EzPhp\OAuth\Oidc\JwksProvider;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
-use PHPUnit\Framework\Attributes\UsesClass;
 use Tests\Support\OAuthOidcSigner;
 
 #[CoversClass(IdTokenValidator::class)]
 #[CoversClass(IdTokenClaims::class)]
-#[UsesClass(JwksProvider::class)]
+#[CoversClass(JwksProvider::class)]
 final class OidcIdTokenValidatorTest extends TestCase
 {
     private const string ISSUER = 'https://idp.example.com';
