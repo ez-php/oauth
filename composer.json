@@ -1,6 +1,6 @@
 {
   "name": "ez-php/oauth",
-  "version": "2.6.5",
+  "version": "2.7.0",
   "description": "OAuth2/SSO client flows: authorization code flow with PKCE and state, token exchange via ez-php/http-client",
   "type": "library",
   "license": "MIT",
@@ -18,14 +18,14 @@
   },
   "require": {
     "php": "^8.5",
-    "ez-php/http-client": "^2.6.0"
+    "ez-php/http-client": "^2.7.0"
   },
   "suggest": {
     "ez-php/cache": "Needed to share Oidc\\JwksProvider's fetched key set between requests"
   },
   "require-dev": {
-    "ez-php/cache": "^2.6.0",
-    "ez-php/docker": "^2.6.0",
+    "ez-php/cache": "^2.7.0",
+    "ez-php/docker": "^2.7.0",
     "phpunit/phpunit": "^13.0",
     "phpstan/phpstan": "^2.1",
     "friendsofphp/php-cs-fixer": "^3.94",
